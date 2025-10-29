@@ -42,6 +42,7 @@ def get_args():
     parser.add_argument("--print_interval", type=int, default=1)
     parser.add_argument("--save_weights", action="store_true")
     parser.add_argument("--load_weights", action="store_true")
+    parser.add_argument("--model_path", type=str, default="/data/home/scvi736/run/")
 
     return parser.parse_args()
 
@@ -70,7 +71,9 @@ def make_schedule(passes: List[str], warmup):
 
 
 def main():
+    os.environ["TOKENIZERS_PARALLELISM"] = "false" # to suppress tokenizer parallelism warning
     args = get_args()
+    args.load_weights = True # 必须设置为true，否则还是从huggingface中下载权重，不走本地路径
     print(args)
 
     if args.passes is not None and "offload_adam_states" in args.passes:
@@ -92,19 +95,32 @@ def main():
 
     model_name = args.model_name
 
-    model_weight_path = f"{model_name.split('/')[1]}_cp_layer{args.num_layers}"
+    # model_weight_path = f"{model_name.split('/')[1]}_cp_layer{args.num_layers}"
+    model_weight_path = os.path.join(args.model_path, args.model_name)
+    
+    if accelerator.is_main_process:
+        print(f"model_weight_path: {model_weight_path}")
     if args.load_weights:
-        model = AutoModelForCausalLM.from_pretrained(model_weight_path, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_weight_path, 
+                                                     trust_remote_code=True)
     else:
         if args.num_layers > 0:
-            model_config = AutoConfig.from_pretrained(model_name, attn_implementation=args.attn_impl, trust_remote_code=True)
+            model_config = AutoConfig.from_pretrained(model_name, 
+                                                      attn_implementation=args.attn_impl, 
+                                                      trust_remote_code=True)
             print(f"num_hidden_layers: {model_config.num_hidden_layers} -> {args.num_layers}")
             model_config.num_hidden_layers = args.num_layers
             model = AutoModelForCausalLM.from_config(model_config, trust_remote_code=True)
         else:
-            model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(model_name, 
+                                                         trust_remote_code=True)
+            
+    if accelerator.is_main_process:
+        print(f"model is {model}")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    # tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_weight_path, 
+                                              trust_remote_code=True)
 
     if args.save_weights and accelerator.is_main_process:
         model.save_pretrained(model_weight_path)
@@ -120,10 +136,11 @@ def main():
     else:
         disable_progress_bar()
         
-    dataset = load_dataset('ag_news', split='train[:100%]', download_config=DownloadConfig(disable_tqdm=True))
+    # dataset = load_dataset('ag_news', split='train[:100%]', download_config=DownloadConfig(disable_tqdm=True))
+    dataset = load_dataset('/data/home/scvi736/run/DeepSpeedExamples/benchmarks/deepcompile/datasets', split='train[:100%]', download_config=DownloadConfig(disable_tqdm=True))
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    tokenizer.pad_token = tokenizer.convert_ids_to_tokens(2)
+    # tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    # tokenizer.pad_token = tokenizer.convert_ids_to_tokens(2)
 
     def tokenize_function(examples):
         return tokenizer(examples['text'], padding='max_length', max_length=args.seq_length, truncation=True)
