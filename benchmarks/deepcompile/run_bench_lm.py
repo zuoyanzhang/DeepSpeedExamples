@@ -115,6 +115,13 @@ def main():
             model = AutoModelForCausalLM.from_pretrained(model_name, 
                                                          trust_remote_code=True)
             
+    # 有些buffer类型是float32，使用fsdp+compile的时候需要强制将buffer提前转换成bfloat16，
+    # 否则torch.compile的dynamo会触发类型转换错误
+    # model = model.to(dtype=torch.bfloat16)
+    # for name, buffer in model.named_buffers():
+    #     if buffer.dtype == torch.float32:
+    #         buffer.data = buffer.data.to(torch.bfloat16)
+            
     if accelerator.is_main_process:
         print(f"model is {model}")
 
@@ -230,8 +237,10 @@ def main():
                     global_step += 1
 
                     if update_step:
+                        alloc_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+                        peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
                         if accelerator.is_main_process and global_step % (args.print_interval * args.gradient_accumulation_steps) == 0:
-                            print(f"Epoch {epoch+1}, Step {global_step}, Loss: {loss.item()} sync: {accelerator.sync_gradients} time: {time.time() - start_iter} alloc_mem: {torch.cuda.memory_allocated()} peak_mem: {torch.cuda.max_memory_allocated()}")
+                            print(f"Epoch {epoch+1}, Step {global_step}, Loss: {loss.item()} sync: {accelerator.sync_gradients} time: {time.time() - start_iter} alloc_mem: {alloc_gb:.2f} GB peak_mem: {peak_gb:.2f} GB")
 
                         iter_times.append(time.time() - start_iter)
                         start_iter = time.time()
@@ -255,7 +264,9 @@ def main():
             compile_time_sum = sum(t for _, _, _, t in compile_time)
 
         is_deepcompile = is_deepspeed and model._config.compile_config.deepcompile
-        msg = f"{args.model_name} ds={is_deepspeed} np={accelerator.num_processes} batch_size={args.batch_size} seq={args.seq_length} zero_stage={args.zero_stage} acc={args.gradient_accumulation_steps} ac={args.activation_checkpointing} compile={args.compile} backend={args.backend} deepcompile={is_deepcompile} passes={args.passes} compile_time={compile_time_sum} iteration time: {sum(iter_times) / len(iter_times):.4f} alloc_mem: {torch.cuda.memory_allocated()} peak_mem: {torch.cuda.max_memory_allocated()}"
+        alloc_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+        peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
+        msg = f"{args.model_name} ds={is_deepspeed} np={accelerator.num_processes} batch_size={args.batch_size} seq={args.seq_length} zero_stage={args.zero_stage} acc={args.gradient_accumulation_steps} ac={args.activation_checkpointing} compile={args.compile} backend={args.backend} deepcompile={is_deepcompile} passes={args.passes} compile_time={compile_time_sum} iteration time: {sum(iter_times) / len(iter_times):.4f} alloc_mem: {alloc_gb:.2f} GB peak_mem: {peak_gb:.2f} GB"
         print(msg)
 
         if args.profile_dir:
